@@ -65,7 +65,11 @@ app.get('/api/health', (req, res) => {
 
 // Auth endpoints
 app.get('/api/auth/check', authenticate, (req, res) => {
-  res.json({ user: { id: req.user.id, email: req.user.email, role: req.user.role || 'user' } });
+  if (req.user) {
+    res.json({ user: { id: req.user.id, email: req.user.email, role: req.user.role || 'user' } });
+  } else {
+    res.json({ user: null }); // Retourne null si non authentifié
+  }
 });
 
 app.post('/api/auth/register', [
