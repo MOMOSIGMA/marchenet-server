@@ -7,6 +7,7 @@ const { body, query, validationResult } = require('express-validator');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const axios = require('axios');
+const cookieParser = require('cookie-parser'); // Ajout pour gérer les cookies
 require('dotenv').config();
 
 const app = express();
@@ -15,7 +16,7 @@ const PORT = process.env.PORT || 3001;
 
 // Middleware
 const corsOptions = {
-  origin: true, // Autorise toutes les origines pour tester (à ajuster plus tard)
+  origin: true,
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -23,6 +24,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(compression());
+app.use(cookieParser()); // Ajout pour gérer les cookies
 app.use((req, res, next) => {
   res.setHeader('Cache-Control', 'public, max-age=600');
   next();
@@ -51,7 +53,7 @@ const authenticate = async (req, res, next) => {
 // Gestion globale des erreurs
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).json({ error: 'Une erreur interne est survenue' });
+  res.status(500).json({ error: 'Une erreur interne est survenue', details: err.message });
 });
 
 // Initialiser Supabase
@@ -69,9 +71,9 @@ app.get('/api/health', (req, res) => {
 // Auth endpoints
 app.get('/api/auth/check', authenticate, (req, res) => {
   if (req.user) {
-    res.json({ user: { id: req.user.id, email: req.user.email, role: req.user.role || 'user' } });
+    res.json({ user: { id: req.user.id, email: req.user.email } });
   } else {
-    res.json({ user: null }); // Retourne null si non authentifié
+    res.json({ user: null });
   }
 });
 
@@ -99,6 +101,7 @@ app.post('/api/auth/register', [
     if (insertError) throw insertError;
 
     const token = jwt.sign({ token: data.session.access_token }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    res.cookie('token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict' });
     res.json({ token });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -117,15 +120,16 @@ app.post('/api/auth/login', [
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
 
+    // Vérifier si l'utilisateur est un vendeur
     const { data: vendorData, error: vendorError } = await supabase
       .from('vendors')
-      .select('role')
+      .select('auth_id')
       .eq('auth_id', data.user.id)
       .single();
     if (vendorError && vendorError.code !== 'PGRST116') throw vendorError;
-    const role = vendorData?.role || 'user';
 
     const token = jwt.sign({ token: data.session.access_token }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    res.cookie('token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict' });
     res.json({ token });
   } catch (error) {
     res.status(401).json({ error: error.message });
@@ -136,6 +140,7 @@ app.post('/api/auth/logout', authenticate, async (req, res) => {
   try {
     const { error } = await supabase.auth.signOut();
     if (error) throw error;
+    res.clearCookie('token');
     res.json({ message: 'Déconnexion réussie' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -162,6 +167,7 @@ app.post('/api/auth/forgot-password', [
 
 // User endpoints
 app.get('/api/users/me', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   try {
     const { data, error } = await supabase
       .from('users')
@@ -176,6 +182,7 @@ app.get('/api/users/me', authenticate, async (req, res) => {
 });
 
 app.post('/api/users', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   try {
     const { email, first_name, last_name, phone_number } = req.body;
     const { error } = await supabase.from('users').insert({
@@ -186,7 +193,7 @@ app.post('/api/users', authenticate, async (req, res) => {
       phone_number,
     });
     if (error) throw error;
-    res.status(201).json({ message: 'User created' });
+    res.status(201).json({ message: 'Utilisateur créé' });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -194,6 +201,7 @@ app.post('/api/users', authenticate, async (req, res) => {
 
 // Profile endpoints
 app.get('/api/profiles/me', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   try {
     const { data, error } = await supabase
       .from('profiles')
@@ -208,6 +216,7 @@ app.get('/api/profiles/me', authenticate, async (req, res) => {
 });
 
 app.post('/api/profiles', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   const { role, country, email } = req.body;
   try {
     const { data, error } = await supabase
@@ -223,6 +232,7 @@ app.post('/api/profiles', authenticate, async (req, res) => {
 });
 
 app.put('/api/profiles/me', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   const { country } = req.body;
   try {
     const { data, error } = await supabase
@@ -238,7 +248,7 @@ app.put('/api/profiles/me', authenticate, async (req, res) => {
 });
 
 // Vendor endpoints
-app.get('/api/vendors', authenticate, async (req, res) => {
+app.get('/api/vendors', async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('vendors')
@@ -250,7 +260,7 @@ app.get('/api/vendors', authenticate, async (req, res) => {
   }
 });
 
-app.get('/api/vendors/active', authenticate, async (req, res) => {
+app.get('/api/vendors/active', async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('vendors')
@@ -264,6 +274,7 @@ app.get('/api/vendors/active', authenticate, async (req, res) => {
 });
 
 app.get('/api/vendors/me', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   try {
     const { data, error } = await supabase
       .from('vendors')
@@ -277,7 +288,7 @@ app.get('/api/vendors/me', authenticate, async (req, res) => {
   }
 });
 
-app.get('/api/vendors/:vendor_id', authenticate, async (req, res) => {
+app.get('/api/vendors/:vendor_id', async (req, res) => {
   const { vendor_id } = req.params;
   const { activeOnly } = req.query;
   try {
@@ -292,13 +303,15 @@ app.get('/api/vendors/:vendor_id', authenticate, async (req, res) => {
 
     const { data, error } = await query.single();
     if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'Boutique non trouvée' });
     res.json(data);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(404).json({ error: 'Boutique non trouvée ou désactivée' });
   }
 });
 
 app.post('/api/vendors', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   try {
     const { vendor_name, shop_name, address, country, phone_number, email, vendor_code, current_plan, subscription_end_date, quota_limit, is_store_active } = req.body;
     const { data, error } = await supabase
@@ -327,6 +340,7 @@ app.post('/api/vendors', authenticate, async (req, res) => {
 });
 
 app.put('/api/vendors/me', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   try {
     const { pack, subscription_end_date, current_plan, quota_limit, is_store_active } = req.body;
     const updateData = {};
@@ -350,6 +364,7 @@ app.put('/api/vendors/me', authenticate, async (req, res) => {
 });
 
 app.get('/api/vendors/:vendorId/quota', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   const { vendorId } = req.params;
   const cacheKey = `quota_${vendorId}`;
 
@@ -453,23 +468,34 @@ app.get('/api/products/suggestions', async (req, res) => {
   }
 });
 
-app.get('/api/products/:id', authenticate, async (req, res) => {
+app.get('/api/products/:id', async (req, res) => {
   const { id } = req.params;
   try {
     const { data, error } = await supabase
       .from('products')
       .select('id, name, price, stock, stock_status, category, countries, photo_urls, vendor_id, condition, description')
       .eq('id', id)
+      .eq('is_active', true)
       .single();
     if (error) throw error;
-    if (!data) return res.status(404).json({ error: 'Produit non trouvé' });
-    res.json(data);
+    if (!data) return res.status(404).json({ error: 'Produit non trouvé ou désactivé' });
+
+    // Récupérer les informations du vendeur pour le contact WhatsApp
+    const { data: vendorData, error: vendorError } = await supabase
+      .from('vendors')
+      .select('vendor_name, phone_number')
+      .eq('auth_id', data.vendor_id)
+      .single();
+    if (vendorError) throw vendorError;
+
+    res.json({ ...data, vendor: vendorData });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 app.get('/api/products/mine', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   try {
     const { data, error } = await supabase
       .from('products')
@@ -483,6 +509,7 @@ app.get('/api/products/mine', authenticate, async (req, res) => {
 });
 
 app.put('/api/products/:id', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   const { id } = req.params;
   const { name, description, price, category, stock, photo_urls, countries, stock_status, condition } = req.body;
   try {
@@ -516,12 +543,13 @@ app.put('/api/products/:id', authenticate, async (req, res) => {
   }
 });
 
-// Shop endpoints (remplacement de /shops par /vendors pour cohérence)
+// Shop endpoints
 app.get('/api/shops', async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('vendors')
-      .select('auth_id, shop_name, phone_number, country');
+      .select('auth_id, shop_name, phone_number, country')
+      .eq('is_store_active', true);
     if (error) throw error;
     res.json(data);
   } catch (error) {
@@ -536,9 +564,10 @@ app.get('/api/shops/:id', async (req, res) => {
       .from('vendors')
       .select('auth_id, shop_name, vendor_name, phone_number, country')
       .eq('auth_id', id)
+      .eq('is_store_active', true)
       .single();
     if (error) throw error;
-    if (!data) return res.status(404).json({ error: 'Boutique non trouvée' });
+    if (!data) return res.status(404).json({ error: 'Boutique non trouvée ou désactivée' });
     res.json(data);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -551,7 +580,8 @@ app.get('/api/shops/:id/products', async (req, res) => {
     const { data, error } = await supabase
       .from('products')
       .select('id, name, price, stock, stock_status, category, countries, photo_urls, vendor_id, condition')
-      .eq('vendor_id', id);
+      .eq('vendor_id', id)
+      .eq('is_active', true);
     if (error) throw error;
     res.json(data);
   } catch (error) {
@@ -561,6 +591,7 @@ app.get('/api/shops/:id/products', async (req, res) => {
 
 // Favorite endpoints
 app.get('/api/favorites', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   try {
     const { data, error } = await supabase
       .from('favorites')
@@ -574,6 +605,7 @@ app.get('/api/favorites', authenticate, async (req, res) => {
 });
 
 app.get('/api/favorites/mine', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   try {
     const { data, error } = await supabase
       .from('favorites')
@@ -589,6 +621,7 @@ app.get('/api/favorites/mine', authenticate, async (req, res) => {
 app.get('/api/favorites/check', authenticate, [
   query('productId').notEmpty().withMessage('Product ID requis'),
 ], async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg });
 
@@ -610,6 +643,7 @@ app.get('/api/favorites/check', authenticate, [
 app.post('/api/favorites/toggle', authenticate, [
   body('productId').notEmpty().withMessage('Product ID requis'),
 ], async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg });
 
@@ -644,6 +678,7 @@ app.post('/api/favorites/toggle', authenticate, [
 
 // Cart endpoints
 app.get('/api/cart', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   try {
     const { data, error } = await supabase
       .from('cart')
@@ -657,6 +692,7 @@ app.get('/api/cart', authenticate, async (req, res) => {
 });
 
 app.get('/api/cart/mine', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   try {
     const { data, error } = await supabase
       .from('cart')
@@ -672,6 +708,7 @@ app.get('/api/cart/mine', authenticate, async (req, res) => {
 app.get('/api/cart/check', authenticate, [
   query('productId').notEmpty().withMessage('Product ID requis'),
 ], async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg });
 
@@ -694,6 +731,7 @@ app.post('/api/cart/toggle', authenticate, [
   body('productId').notEmpty().withMessage('Product ID requis'),
   body('quantity').isInt({ min: 1 }).withMessage('Quantité invalide'),
 ], async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg });
 
@@ -729,6 +767,7 @@ app.post('/api/cart/toggle', authenticate, [
 app.put('/api/cart/:id', authenticate, [
   body('quantity').isInt({ min: 1 }).withMessage('Quantité invalide'),
 ], async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg });
 
@@ -750,6 +789,7 @@ app.put('/api/cart/:id', authenticate, [
 });
 
 app.delete('/api/cart/:id', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   const { id } = req.params;
   try {
     const { error } = await supabase
@@ -766,6 +806,7 @@ app.delete('/api/cart/:id', authenticate, async (req, res) => {
 
 // Notification endpoints
 app.get('/api/notifications', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   try {
     const { data, error } = await supabase
       .from('notifications')
@@ -786,6 +827,7 @@ app.get('/api/notifications', authenticate, async (req, res) => {
 });
 
 app.get('/api/notifications/unread-count', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   try {
     const { count, error } = await supabase
       .from('notifications')
@@ -800,6 +842,7 @@ app.get('/api/notifications/unread-count', authenticate, async (req, res) => {
 });
 
 app.put('/api/notifications/:id/read', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   const { id } = req.params;
   try {
     const { error } = await supabase
@@ -807,7 +850,7 @@ app.put('/api/notifications/:id/read', authenticate, async (req, res) => {
       .update({ is_read: true })
       .eq('id', id);
     if (error) throw error;
-    res.json({ message: 'Notification marked as read' });
+    res.json({ message: 'Notification marquée comme lue' });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -817,6 +860,7 @@ app.post('/api/notifications', authenticate, [
   body('receiverId').notEmpty().withMessage('Receiver ID requis'),
   body('message').notEmpty().withMessage('Message requis'),
 ], async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
@@ -838,6 +882,7 @@ app.post('/api/notifications', authenticate, [
 
 // Subscription endpoints
 app.get('/api/subscription', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   try {
     const { data: vendorData, error } = await supabase
       .from('vendors')
@@ -865,6 +910,7 @@ app.get('/api/subscription', authenticate, async (req, res) => {
 app.post('/api/subscription/upgrade', authenticate, [
   body('plan').notEmpty().withMessage('Plan requis'),
 ], async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg });
 
@@ -904,6 +950,7 @@ app.post('/api/payments/create', authenticate, [
   body('customer.email').isEmail().withMessage('Email du client invalide'),
   body('customer.phone').matches(/^\d{9}$/).withMessage('Numéro de téléphone invalide (9 chiffres requis)'),
 ], async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
@@ -960,6 +1007,7 @@ app.post('/api/payments/create', authenticate, [
 });
 
 app.get('/api/payments/status/:token', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   const { token } = req.params;
   try {
     const response = await axios.get(`https://app.paydunya.com/api/v1/checkout-invoice/status/${token}`, {
@@ -976,12 +1024,24 @@ app.get('/api/payments/status/:token', authenticate, async (req, res) => {
 
 // Upload endpoint
 app.post('/api/upload', authenticate, upload.single('image'), async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
   try {
     const file = req.file;
     if (!file) return res.status(400).json({ error: 'Aucun fichier uploadé' });
+
     const fileName = `${Date.now()}-${req.user.id}.${file.originalname.split('.').pop()}`;
-    const publicUrl = `https://ton-backend.onrender.com/uploads/${fileName}`; // À remplacer par une URL réelle (Cloudinary ou autre)
-    res.json({ url: publicUrl });
+    const { data, error } = await supabase.storage
+      .from('product-images')
+      .upload(fileName, file.buffer, {
+        contentType: file.mimetype,
+        upsert: true,
+      });
+    if (error) throw error;
+
+    const { data: publicUrlData } = supabase.storage
+      .from('product-images')
+      .getPublicUrl(fileName);
+    res.json({ url: publicUrlData.publicUrl });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
