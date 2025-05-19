@@ -31,7 +31,10 @@ app.use((req, res, next) => {
 // Middleware d'authentification
 const authenticate = async (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1] || req.cookies?.token;
-  if (!token) return res.status(401).json({ error: 'Non authentifié' });
+  if (!token) {
+    req.user = null; // Pas d'authentification, mais passe au suivant
+    return next();
+  }
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
