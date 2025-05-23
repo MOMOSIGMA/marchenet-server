@@ -7,7 +7,8 @@ const { body, query, validationResult } = require('express-validator');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const axios = require('axios');
-const cookieParser = require('cookie-parser'); // Ajout pour gérer les cookies
+const cookieParser = require('cookie-parser');
+const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const app = express();
@@ -22,9 +23,13 @@ const corsOptions = {
   allowedHeaders: ['Content-Type', 'Authorization'],
 };
 app.use(cors(corsOptions));
+app.use(rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limite à 100 requêtes par IP
+}));
 app.use(express.json());
 app.use(compression());
-app.use(cookieParser()); // Ajout pour gérer les cookies
+app.use(cookieParser());
 app.use((req, res, next) => {
   res.setHeader('Cache-Control', 'public, max-age=600');
   next();
@@ -34,7 +39,7 @@ app.use((req, res, next) => {
 const authenticate = async (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1] || req.cookies?.token;
   if (!token) {
-    req.user = null; // Pas d'authentification, mais passe au suivant
+    req.user = null;
     return next();
   }
 
@@ -53,7 +58,8 @@ const authenticate = async (req, res, next) => {
 // Gestion globale des erreurs
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).json({ error: 'Une erreur interne est survenue', details: err.message });
+  const errorDetails = process.env.NODE_ENV === 'production' ? 'Détails masqués en production' : err.message;
+  res.status(500).json({ error: 'Une erreur interne est survenue', details: errorDetails });
 });
 
 // Initialiser Supabase
@@ -120,7 +126,6 @@ app.post('/api/auth/login', [
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
 
-    // Vérifier si l'utilisateur est un vendeur
     const { data: vendorData, error: vendorError } = await supabase
       .from('vendors')
       .select('auth_id')
@@ -442,27 +447,26 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
-app.get('/api/products/suggestions', async (req, res) => {
-  const { query, country } = req.query;
-  if (!query) return res.status(400).json({ error: 'Requête de recherche requise' });
-
-  const expandedQueries = query.split(',').map(q => q.trim());
+app.get('/api/vitrine/products/:id', async (req, res) => {
+  const { id } = req.params;
   try {
-    let supabaseQuery = supabase
+    const { data, error } = await supabase
       .from('products')
-      .select('name, category')
-      .or(expandedQueries.map(q => `name.ilike.%${q}%,category.ilike.%${q}%`).join(','))
+      .select('id, name, price, stock, stock_status, category, countries, photo_urls, vendor_id, condition, description')
+      .eq('id', id)
       .eq('is_active', true)
-      .eq('stock_status', 'disponible')
-      .limit(5);
-
-    if (country && country !== 'all') {
-      supabaseQuery = supabaseQuery.contains('countries', [country]);
-    }
-
-    const { data, error } = await supabaseQuery;
+      .single();
     if (error) throw error;
-    res.json(data || []);
+    if (!data) return res.status(404).json({ error: 'Produit non trouvé ou désactivé' });
+
+    const { data: vendorData, error: vendorError } = await supabase
+      .from('vendors')
+      .select('vendor_name, phone_number')
+      .eq('auth_id', data.vendor_id)
+      .single();
+    if (vendorError) throw vendorError;
+
+    res.json({ data: { ...data, vendor: vendorData } });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -480,7 +484,6 @@ app.get('/api/products/:id', async (req, res) => {
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'Produit non trouvé ou désactivé' });
 
-    // Récupérer les informations du vendeur pour le contact WhatsApp
     const { data: vendorData, error: vendorError } = await supabase
       .from('vendors')
       .select('vendor_name, phone_number')
@@ -583,7 +586,7 @@ app.post('/api/vitrine/products', authenticate, async (req, res) => {
           vendor_id: req.user.id,
           is_active: true,
           stock_status: 'disponible',
-          stock: 1, // Ajuste selon ton besoin
+          stock: 1,
         },
       ])
       .select();
@@ -987,7 +990,7 @@ app.post('/api/subscription/upgrade', authenticate, [
     if (updateError) throw updateError;
 
     const paymentResponse = await axios.post(`${req.protocol}://${req.get('host')}/api/payments/create`, {
-      amount: 5000, // Montant à ajuster selon le plan
+      amount: 5000,
       description: `Paiement pour l'abonnement ${plan}`,
       customer: {
         name: 'Utilisateur',
