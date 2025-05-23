@@ -543,6 +543,70 @@ app.put('/api/products/:id', authenticate, async (req, res) => {
   }
 });
 
+// Vitrine endpoints
+app.get('/api/vitrine/products', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('products')
+      .select('id, name, price, stock, stock_status, category, countries, photo_urls, vendor_id, condition')
+      .eq('is_active', true);
+    if (error) throw error;
+    res.json({ data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/vitrine/products', authenticate, async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
+  const { name, description, price, category, countries, condition, images } = req.body;
+  try {
+    const { data: vendorData, error: vendorError } = await supabase
+      .from('vendors')
+      .select('id')
+      .eq('auth_id', req.user.id)
+      .single();
+    if (vendorError) throw vendorError;
+    if (!vendorData) return res.status(403).json({ error: 'Vous devez être un vendeur pour ajouter un produit' });
+
+    const { data, error } = await supabase
+      .from('products')
+      .insert([
+        {
+          name,
+          description,
+          price,
+          category,
+          countries: countries.split(',').map((c) => c.trim()),
+          condition,
+          photo_urls: images,
+          vendor_id: req.user.id,
+          is_active: true,
+          stock_status: 'disponible',
+          stock: 1, // Ajuste selon ton besoin
+        },
+      ])
+      .select();
+    if (error) throw error;
+    res.json({ data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/vitrine/subscribers', async (req, res) => {
+  const { full_name, email, phone_number, type, agree } = req.body;
+  try {
+    const { data, error } = await supabase
+      .from('vitrine_subscribers')
+      .insert([{ full_name, email, phone_number, type, agree }]);
+    if (error) throw error;
+    res.json({ data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Shop endpoints
 app.get('/api/shops', async (req, res) => {
   try {
