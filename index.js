@@ -9,6 +9,12 @@ const multer = require('multer');
 const axios = require('axios');
 const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
+const winston = require('winston');
+const statusMonitor = require('express-status-monitor');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const swaggerUi = require('swagger-ui-express');
+const swaggerJsdoc = require('swagger-jsdoc');
 require('dotenv').config();
 
 const app = express();
@@ -27,13 +33,36 @@ app.use(rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100, // Limite à 100 requêtes par IP
 }));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 app.use(compression());
 app.use(cookieParser());
 app.use((req, res, next) => {
   res.setHeader('Cache-Control', 'public, max-age=600');
   next();
 });
+app.use(statusMonitor());
+app.use(helmet());
+app.use(morgan('combined', { stream: { write: msg => logger.info(msg.trim()) } }));
+
+// Logger configuration
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.File({ filename: 'server-error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'server-combined.log' }),
+  ],
+});
+
+// En développement, affiche aussi dans la console
+if (process.env.NODE_ENV !== 'production') {
+  logger.add(new winston.transports.Console({
+    format: winston.format.simple(),
+  }));
+}
 
 // Middleware d'authentification
 const authenticate = async (req, res, next) => {
@@ -57,7 +86,7 @@ const authenticate = async (req, res, next) => {
 
 // Gestion globale des erreurs
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  logger.error(err.stack);
   const errorDetails = process.env.NODE_ENV === 'production' ? 'Détails masqués en production' : err.message;
   res.status(500).json({ error: 'Une erreur interne est survenue', details: errorDetails });
 });
@@ -1064,7 +1093,7 @@ app.post('/api/payments/create', authenticate, [
       message: 'Paiement initié avec succès',
     });
   } catch (error) {
-    console.error('Erreur PayDunya API:', error.response?.data || error.message);
+    logger.error('Erreur PayDunya API:', error.response?.data || error.message);
     res.status(500).json({
       success: false,
       message: 'Erreur lors de l\'initiation du paiement',
@@ -1114,9 +1143,19 @@ app.post('/api/upload', authenticate, upload.single('image'), async (req, res) =
   }
 });
 
+// Documentation Swagger
+const swaggerSpec = swaggerJsdoc({
+  definition: {
+    openapi: '3.0.0',
+    info: { title: 'API MarchéNet', version: '1.0.0' },
+  },
+  apis: ['./server/index.js'], // ou le chemin de tes routes
+});
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
 // Démarrage du serveur
 app.listen(PORT, () => {
-  console.log(`Serveur démarré sur le port ${PORT} à ${new Date().toLocaleString('fr-FR', { timeZone: 'GMT' })}`);
+  logger.info(`Serveur démarré sur le port ${PORT} à ${new Date().toLocaleString('fr-FR', { timeZone: 'GMT' })}`);
 });
 
 app.get('/', (req, res) => {
