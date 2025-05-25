@@ -644,6 +644,61 @@ app.post('/api/vitrine/products', authenticate, upload.array('images', 3), async
   }
 });
 
+app.post('/api/products', authenticate, upload.array('images', 3), async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
+  try {
+    const { name, description, price, category, stock, stock_status, condition } = req.body;
+    const countries = JSON.parse(req.body.countries);
+    // Récupère le vendor_id du vendeur connecté
+    const { data: vendorData, error: vendorError } = await supabase
+      .from('vendors')
+      .select('id')
+      .eq('auth_id', req.user.id)
+      .single();
+    if (vendorError) throw vendorError;
+    if (!vendorData) return res.status(403).json({ error: 'Vous devez être un vendeur pour ajouter un produit' });
+
+    // Gestion des images (upload sur Supabase Storage ou autre)
+    let photo_urls = [];
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        const fileName = `${Date.now()}-${file.originalname}`;
+        // Upload sur Supabase Storage (ou autre)
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from('product-images')
+          .upload(fileName, file.buffer, { contentType: file.mimetype });
+        if (uploadError) throw uploadError;
+        const { data: publicUrlData } = supabase.storage.from('product-images').getPublicUrl(fileName);
+        photo_urls.push(publicUrlData.publicUrl);
+      }
+    }
+
+    // Ajoute le produit
+    const { data, error } = await supabase
+      .from('products')
+      .insert([{
+        name,
+        description,
+        price: parseInt(price),
+        category,
+        countries,
+        stock: parseInt(stock),
+        stock_status,
+        condition,
+        photo_urls,
+        vendor_id: vendorData.id,
+        is_active: true,
+      }])
+      .select()
+      .single();
+    if (error) throw error;
+
+    res.status(201).json({ message: 'Produit ajouté !' });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.post('/api/vitrine/subscribers', async (req, res) => {
   const { full_name, email, phone_number, type, agree } = req.body;
   try {
