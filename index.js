@@ -591,8 +591,9 @@ app.get('/api/vitrine/products', async (req, res) => {
 
 app.post('/api/vitrine/products', authenticate, async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Authentification requise' });
-  const { name, description, price, category, countries, condition, images } = req.body;
+  const { name, description, price, category, countries, stock, stock_status, condition, images } = req.body;
   try {
+    // Récupère le vendor_id du vendeur connecté
     const { data: vendorData, error: vendorError } = await supabase
       .from('vendors')
       .select('id')
@@ -601,28 +602,29 @@ app.post('/api/vitrine/products', authenticate, async (req, res) => {
     if (vendorError) throw vendorError;
     if (!vendorData) return res.status(403).json({ error: 'Vous devez être un vendeur pour ajouter un produit' });
 
+    // Ajoute le produit
     const { data, error } = await supabase
       .from('products')
-      .insert([
-        {
-          name,
-          description,
-          price,
-          category,
-          countries: countries.split(',').map((c) => c.trim()),
-          condition,
-          photo_urls: images,
-          vendor_id: req.user.id,
-          is_active: true,
-          stock_status: 'disponible',
-          stock: 1,
-        },
-      ])
-      .select();
+      .insert([{
+        name,
+        description,
+        price,
+        category,
+        countries: Array.isArray(countries) ? countries : [countries],
+        stock,
+        stock_status,
+        condition,
+        photo_urls: images, // ou adapte selon ton frontend
+        vendor_id: vendorData.id,
+        is_active: true,
+      }])
+      .select()
+      .single();
     if (error) throw error;
-    res.json({ data });
+
+    res.status(201).json(data);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(400).json({ error: error.message });
   }
 });
 
