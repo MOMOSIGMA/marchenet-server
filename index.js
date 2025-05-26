@@ -1233,31 +1233,5 @@ app.listen(PORT, () => {
 });
 
 app.get('/', (req, res) => {
-  res.send('🚀 MarchéNet Server est en ligne !');
+  res.send('Hello from backend!');
 });
-
-const countryOptions = [
-  { name: 'Sénégal', code: 'SN', phone: '+221', length: 9 },
-  { name: 'Mali', code: 'ML', phone: '+223', length: 8 },
-  { name: 'Côte d\'Ivoire', code: 'CI', phone: '+225', length: 10 },
-  { name: 'Guinée', code: 'GN', phone: '+224', length: 9 },
-  { name: 'Burkina Faso', code: 'BF', phone: '+226', length: 8 },
-  { name: 'Togo', code: 'TG', phone: '+228', length: 8 },
-  { name: 'Bénin', code: 'BJ', phone: '+229', length: 8 },
-  { name: 'Cameroun', code: 'CM', phone: '+237', length: 9 },
-];
-
-<select
-  id="country"
-  value={country}
-  onChange={(e) => setCountry(e.target.value)}
-  className="w-full p-2 border rounded-lg font-opensans focus:outline-none focus:ring-2 focus:ring-orange-500"
-  required
->
-  <option value="">Sélectionnez un pays</option>
-  {countryOptions.map((option) => (
-    <option key={option.code} value={option.code}>
-      {option.name}
-    </option>
-  ))}
-</select>
